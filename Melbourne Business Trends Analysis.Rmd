@@ -1,0 +1,565 @@
+---
+title: "Analysing Business Establishments and Industry Distribution in Melbourne from
+2002 to 2022."
+author: "Alicia Zhao"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: show
+    highlight: haddock
+    theme: flatly
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readxl)
+
+url <- "https://data.melbourne.vic.gov.au/api/explore/v2.1/catalog/datasets/business-establishments-per-block-by-anzsic/exports/xlsx?lang=en&timezone=Australia%2FSydney&use_labels=true"
+destfile <- "business-establishments-per-block-by-anzsic.xlsx"
+download.file(url, destfile, mode = "wb")
+
+anzsic <- read_excel(destfile)
+
+head(anzsic)
+```
+If the link doesn't work, that's another link to download xlsx file manually.
+https://data.melbourne.vic.gov.au/explore/dataset/business-establishments-per-block-by-anzsic/export/
+
+First need to check whether there are missing values by column.
+
+```{r}
+colSums(is.na(anzsic))
+```
+The result indicates that no missing value is in this dataset.
+
+```{r}
+unique(anzsic$`CLUE small area`)
+```
+'City of Melbourne (total)' isn't part of the ANZSIC area, so we need to check it out.
+
+```{r}
+library(tidyverse)
+total_anz <- anzsic %>% filter(`CLUE small area` == "City of Melbourne (total)")
+total_anz
+```
+Those are summary rows from 2002 to 2022. Summary rows can be removed now, we can take it into account later. 
+
+```{r}
+anzsic <- anzsic %>%
+  filter(`CLUE small area` != "City of Melbourne (total)")
+```
+
+Block ID is not very useful for our analysis, as it is divided into small city blocks by area, and the corresponding geographical location is confidential information. We can remove this column and calculate the total number of locations of establishment in different years and areas.
+
+```{r}
+anzsic_group_by <- anzsic %>%
+  select(-`Block ID`) %>%  
+  group_by(`Census year`, `CLUE small area`) %>%
+  summarise(across(where(is.numeric), sum), .groups = "drop") %>%
+  rename(`Total establishments in area` = `Total establishments in block`)
+
+head(anzsic_group_by)
+```
+Melbourne (CBD) area has a great number of establishment locations in all fields, therefore, distinguish between CBD and Non-CBD, and calculate the total number of establishment locations in different area types.
+
+```{r}
+anzsic_cbd <- anzsic_group_by %>%
+  mutate(Area_Type = ifelse(`CLUE small area` == "Melbourne (CBD)", "CBD", "Non-CBD"))
+
+anzsic_cbd <- anzsic_cbd %>%
+  group_by(`Census year`, Area_Type) %>%
+  summarise(`Total establishments in area` = sum(`Total establishments in area`), .groups = "drop")
+
+```
+Make the plot
+
+```{r}
+library(ggplot2)
+
+ggplot(anzsic_cbd, aes(x = `Census year`, y = `Total establishments in area`, fill = Area_Type)) +
+  geom_bar(stat = "identity", position = "dodge") +  
+  labs(title = "Establishments in CBD and Non-CBD Areas by Year",
+       x = "Year",
+       y = "Establishments in Area") +
+  scale_fill_manual(values = c("CBD" = "lightblue", "Non-CBD" = "pink")) +  
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+The number of establishment locations in the CBD is always greater than that in non-CBD areas, indicating that there are more business and employment opportunities in the CBD area. From the trend point of view, the number of establishments has been steadily increasing year by year. After 2019, due to Covid-19, the number of establishments began to decrease, especially in the CBD area.
+
+```{r}
+colnames(anzsic_group_by)
+```
+
+Now divide different industries into five main categories, recording their indices.
+
+Industrial:
+Agriculture, Forestry and Fishing
+Construction
+Electricity, Gas, Water and Waste Services
+Manufacturing 
+Transport, Postal and Warehousing  
+Wholesale Trade 
+Mining
+
+Entertainment:
+Arts and Recreation Services 
+Accommodation and Food Services 
+
+Retail:
+Retail Trade
+
+Institutional:
+Education and Training
+Health Care and Social Assistance
+
+Commercial:
+Administrative and Support Services 
+Financial and Insurance Services
+Information Media and Telecommunications  
+Other Services 
+Rental, Hiring and Real Estate Services
+Public Administration and Safety
+Professional, Scientific and Technical Services 
+
+
+```{r}
+# Industrial columns by index
+industrial_indices <- c(5, 7, 9, 13, 14, 20, 21)
+# Entertainment columns by index
+entertainment_indices <- c(3, 6)
+# Retail columns by index
+retail_indices <- 19
+# Institutional columns by index
+institutional_indices <- c(8, 11)
+# Commercial columns by index
+commercial_indices <- c(4, 10, 12, 15, 16, 17, 18) 
+
+anzsic_category <- anzsic_group_by %>%
+  # Group the data by row
+  rowwise() %>%
+  mutate(
+    Industrial = sum(c_across(all_of(industrial_indices))),
+    Entertainment = sum(c_across(all_of(entertainment_indices))),
+    Retail = sum(c_across(all_of(retail_indices))),
+    Institutional = sum(c_across(all_of(institutional_indices))),
+    Commercial = sum(c_across(all_of(commercial_indices)))
+  ) %>%
+  # Select relevant columns to create the final table
+  select(`Census year`, `CLUE small area`, Industrial, Entertainment, Retail, Institutional, Commercial)
+
+head(anzsic_category)
+```
+
+The result indicates the number of establishment locations by categories. Then choose year 2002, 2012 and 2022, draw 3 pie charts to compare the differences.  
+
+```{r}
+anzsic_filtered <- anzsic_category %>%
+  filter(`Census year` %in% c(2002, 2012, 2022)) %>%
+  pivot_longer(cols = Industrial:Commercial, names_to = "Category", values_to = "Total_count") %>% 
+  # Summarize data by Year and Category, and calculate percentages
+  group_by(`Census year`, Category) %>%
+  summarise(Total_count = sum(Total_count), .groups = "drop") %>%
+  group_by(`Census year`) %>%
+  mutate(Percentage = (Total_count / sum(Total_count)) * 100)
+
+```
+
+```{r}
+# Create Pie Charts for 2002, 2012, and 2022
+# Pie chart for 2002
+anzsic_2002 <- ggplot(anzsic_filtered %>% filter(`Census year` == 2002), aes(x = "", y = Percentage, fill = Category)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  labs(title = "Category Distribution in 2002", x = NULL, y = NULL) +
+  geom_text(aes(label = paste0(round(Percentage, 2), "%")), 
+            position = position_stack(vjust = 0.5)) +
+  theme_void() +
+  theme(legend.position = "right")
+
+# Pie chart for 2012
+anzsic_2012 <- ggplot(anzsic_filtered %>% filter(`Census year` == 2012), aes(x = "", y = Percentage, fill = Category)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  labs(title = "Category Distribution in 2012", x = NULL, y = NULL) +
+  geom_text(aes(label = paste0(round(Percentage, 2), "%")), 
+            position = position_stack(vjust = 0.5)) +
+  theme_void() +
+  theme(legend.position = "right")
+
+# Pie chart for 2022
+anzsic_2022 <- ggplot(anzsic_filtered %>% filter(`Census year` == 2022), aes(x = "", y = Percentage, fill = Category)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  labs(title = "Category Distribution in 2022", x = NULL, y = NULL) +
+  geom_text(aes(label = paste0(round(Percentage, 2), "%")), 
+            position = position_stack(vjust = 0.5)) +
+  theme_void() +
+  theme(legend.position = "right")
+
+# Display the pie charts
+anzsic_2002
+anzsic_2012
+anzsic_2022
+```
+* The commercial category consistently remains the largest, but it shows a gradual decline in its share over time, dropping from 44.44% in 2002 to 39.71% in 2022. 
+* The entertainment category shows a consistent increase over the three periods, growing from 16.48% in 2002 to 24.88% in 2022.
+* The industrial category is steadily declining, dropping from 15.5% in 2002 to 10.95% in 2022. 
+* The institutional category has shown moderate growth over time, rising from 8.62% in 2002 to 11.49% in 2022. 
+* The retail category shows a slight fluctuation, increasing slightly between 2002 and 2012, but then declining to 12.97% in 2022. 
+
+Now consider about areas' trends, choose year 2002, 2006, 2010, 2014, 2018 and 2022 to do the research.
+
+```{r}
+anzsic_area <- anzsic_category %>%
+  filter(`Census year` %in% c(2002, 2006, 2010, 2014, 2018, 2022)) %>%
+  pivot_longer(cols = Industrial:Commercial, names_to = "Category", values_to = "Establishments")
+
+# Create a faceted bar plot to show categories over time for each area
+ggplot(anzsic_area, aes(x = `Census year`, y = Establishments, fill = Category)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~`CLUE small area`, nrow = 4, scales = "free_y") +  
+  labs(title = "Establishments by Category and Area (2002-2022)",
+       x = "Year",
+       y = "Number of Establishment Locations",
+       fill = "Category") +
+  theme_minimal() +
+  scale_fill_manual(values = c("orange", "purple", "blue", "green", "red")) +  
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7)) +  
+  theme(legend.position = "bottom") +
+  theme(strip.text = element_text(size = 7))
+```
+* Melbourne (CBD) consistently has the largest number of establishments compared to other areas. The distribution of categories remains relatively stable over time, with Commercial and Entertainment sectors making up a large portion of the total establishments.
+* Areas like Docklands, Port Melbourne, Kensington have experienced significant growth and establishment diversity over the last two decades, with a focus on Commercial and Entertainment sectors.
+* There is a notable decline in Industrial establishments, especially in West Melbourne.
+* Other areas such as South Yarra, and Carlton have maintained a stable number of establishments with no dramatic shifts in category distribution.
+
+Then only focus on the year 2022 as the most recent data we can get. Create a stacked bar plot for all areas with catogories of 2022.
+
+```{r}
+anzsic_category %>%
+  filter(`Census year` == 2022) %>%
+  pivot_longer(cols = Industrial:Commercial, names_to = "Category", values_to = "Establishments") %>%
+  filter(Establishments > 0) %>%
+  ggplot(aes(x = `CLUE small area`, y = Establishments, fill = Category)) +
+  geom_bar(stat = "identity", position = "stack") +  
+  labs(title = "Establishments by Category and Area (2022)",
+       x = "CLUE Small Area",
+       y = "Number of Establishment Locations",
+       fill = "Category") +
+  theme_minimal() +
+  scale_fill_manual(values = c("orange", "purple", "blue", "green", "red")) +  
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7)) +  
+  theme(legend.position = "bottom") +
+  scale_y_log10() # Apply log10 scaling, reduce the differences between data
+```
+In most areas, Commercial and Entertainment establishments are the dominant categories, particularly in high-density areas like the Melbourne CBD and Docklands.
+
+Areas like Kensington, North Melbourne, and Parkville show more balanced distributions across categories.
+
+I wonder which areas have similar patterns, so cluster analysis is very important. Before we start, scale the data to reduce the impact of the much larger values in the CBD. 
+
+```{r}
+anzsic_2022 <- anzsic_category %>%
+  filter(`Census year` == 2022) %>%
+  select(-`Census year`)
+
+scaled_anzsic_2022 <- anzsic_2022 %>%
+  select(-`CLUE small area`)
+
+scaled_anzsic_2022 <- scale(scaled_anzsic_2022)
+scaled_anzsic_2022
+```
+However, CBD still have much larger values than others, log tranformation has used to reduce values.
+
+```{r}
+scaled_2022_log <- log1p(scaled_anzsic_2022)
+scaled_2022_log
+```
+Define number of clusters, using 2 methods.
+
+Method 1: Silhouette score
+```{r}
+library(cluster)
+
+silhouette_vals <- c()
+
+for (i in 2:10) {
+  kmeans_result <- kmeans(scaled_2022_log, centers = i, iter.max = 10, nstart = 10)
+  silhouette_val <- silhouette(kmeans_result$cluster, dist(scaled_2022_log))
+  silhouette_vals <- c(silhouette_vals, mean(silhouette_val[, 3]))  # Mean silhouette value for each cluster
+}
+
+plot(2:10, silhouette_vals, type = "b", pch = 19, xlab = "Number of clusters",
+     ylab = "Mean Silhouette value", main = "Silhouette Analysis for 2022 Data")
+```
+The graph highlights 3 clusters are the best choice.
+
+Method 2: Elbow method
+```{r}
+wss <- c()
+for (i in 1:10) {
+  kmeans_result <- kmeans(scaled_2022_log, centers = i, iter.max = 10, nstart = 10)
+  wss[i] <- kmeans_result$tot.withinss
+}
+
+plot(1:10, wss, type = "b", pch = 19, xlab = "Number of clusters",
+     ylab = "Within-cluster sum of squares", main = "Elbow method for 2022 data")
+```
+The graph highlights 2 clusters are the best choice.
+
+However, Melbourne (CBD) has larger values and will always be splited as one cluster, so I choose 3 clusters for analyzing.
+
+Method 1: Hierarchical clusters
+```{r}
+clusters <- hclust(dist(scaled_2022_log), method = 'average')
+plot(clusters, labels = anzsic_2022$`CLUE small area`, cex = 0.7, xlab = "", sub = "")
+rect.hclust(clusters, k = 3, border = 2:4) 
+```
+Use Industrial and Institutional variables as examples to analyze differences between clusters
+
+```{r}
+clusterCut <- cutree(clusters, k = 3)
+
+ggplot(as.data.frame(scaled_2022_log), aes(x = Industrial, y = Institutional, color = as.factor(clusterCut))) +
+  geom_point() +
+  geom_text(aes(label = anzsic_2022$`CLUE small area`), vjust = -1, size = 2) +  
+  labs(title = "Clustering of Areas by Industrial and Institutional Categories (Hierarchical clusters)",
+       x = "Industrial", y = "Institutional", color = "Cluster") +
+  theme_minimal()
+```
+Cluster 2: Melbourne (CBD)
+Cluster 3: West Melbourne (Industrial), Port Melbourne
+Cluster 1: Other areas
+
+* Most of Cluster 1 have a more balanced or moderate level of institutional and industrial establishments, without one dominating over the other. 
+* Cluster 2 forms its own distinct cluster due to its high concentration of both Institutional and Industrial establishments, which sets it apart from all other areas.
+* Cluster 3 is in a separate cluster due to their higher focus on industrial activity and lower institutional presence.
+
+```{r}
+# Calculate silhouette score
+cluster_hier_numeric <- as.numeric(as.character(clusterCut))
+silhouette_hierarchical <- silhouette(cluster_hier_numeric, dist(scaled_2022_log))
+mean_silhouette_hierarchical <- mean(silhouette_hierarchical[, 3])
+
+mean_silhouette_hierarchical
+```
+
+Method 2: k-means
+
+```{r}
+set.seed(1234)
+cluster_k <- kmeans(scaled_2022_log, 3, iter.max = 10, nstart = 10)
+# Create a data frame to save area name and cluster number
+area_with_clusters <- data.frame(Area = anzsic_2022$`CLUE small area`, Cluster = as.factor(cluster_k$cluster))
+
+area_with_clusters
+```
+```{r}
+cluster_k$cluster <- as.factor(cluster_k$cluster)
+
+ggplot(as.data.frame(scaled_2022_log), aes(x = Industrial, y = Institutional, color = cluster_k$cluster)) + 
+  geom_point() + 
+  geom_text(aes(label = anzsic_2022$`CLUE small area`), vjust = -1, size = 2) + 
+  ggtitle("Clustering of Areas by Industrial and Institutional Categories (K-means)") +
+  labs(color = "Cluster") +  
+  theme_minimal()
+```
+* The majority of areas in Cluster 1 have relatively lower industrial and institutional activities
+* Carlton, Parkville, East Melbourne, and similar areas form a group of institutional-heavy areas.
+* The Melbourne CBD is distinct, having significantly more industrial and institutional establishments compared to other areas
+
+```{r}
+# Calculate silhouette score
+cluster_kmeans_numeric <- as.numeric(as.character(cluster_k$cluster))
+silhouette_kmeans <- silhouette(cluster_kmeans_numeric, dist(scaled_2022_log))
+mean_silhouette_kmeans <- mean(silhouette_kmeans[, 3])
+
+mean_silhouette_kmeans
+```
+K-means is a better method in this case. Will use k-means to get similar patterns for other variables
+
+```{r}
+ggplot(as.data.frame(scaled_2022_log), aes(x = Industrial, y = Retail, color = cluster_k$cluster)) + 
+  geom_point() + 
+  ggtitle("Clustering of Areas by Industrial and Retail Categories") +
+  labs(color = "Cluster") +  
+  theme_minimal()
+```
+```{r}
+ggplot(as.data.frame(scaled_2022_log), aes(x = Industrial, y = Entertainment, color = cluster_k$cluster)) + 
+  geom_point() + 
+  ggtitle("Clustering of Areas by Industrial and Entertainment Categories") +
+  labs(color = "Cluster") +  
+  theme_minimal()
+```
+```{r}
+ggplot(as.data.frame(scaled_2022_log), aes(x = Industrial, y = Commercial, color = cluster_k$cluster)) + 
+  geom_point() + 
+  ggtitle("Clustering of Areas by Industrial and Commercial Categories") +
+  labs(color = "Cluster") +  
+  theme_minimal()
+```
+Conclusion:
+* Cluster 1 represents mixed-use areas with moderate to low establishment activity across all categories.
+* Cluster 2 consists of institutional or residential areas with moderate activity in Retail, Entertainment, or Commercial but with relatively lower Industrial activity.
+* Cluster 3, with the Melbourne CBD, reflects the area’s dominant role in all categories, acting as the hub for Industrial, Retail, Entertainment, and Commercial establishments.
+
+Make predictions for the future 5 years.
+```{r}
+total_anz <- total_anz %>%
+  select(-`Block ID`)
+
+head(total_anz)
+```
+
+```{r}
+ggplot(data = total_anz, aes(x = `Census year`, y = `Total establishments in block`, group = 1)) +
+  geom_line(color = "orange", size = 1) + 
+  geom_point(color = "red", size = 1) + 
+  labs(title = "Total Establishment Locations by Year",
+       x = "Year",
+       y = "Total Establishment Locations") +
+  theme_minimal()
+```
+The number of establishment locations grew steadily from 2002 to 2019 but experienced a sharp decline starting in 2020, likely due to the impact of the COVID-19 pandemic. 
+
+```{r}
+library(tseries)
+library(forecast)
+```
+
+First sort the data by year and create a time series starts from 2002. Using 3 methods to predict the trend for next 5 years.
+
+```{r}
+total_anz <- total_anz[order(total_anz$`Census year`), ]
+total_anz_ts <- ts(total_anz$`Total establishments in block`, start = c(2002), frequency = 1)
+```
+
+Method 1: Linear Regression Model.
+
+```{r}
+# time series is yearly, therefore, no seasonal impact
+linear_anz <- tslm(total_anz_ts ~ trend) 
+accuracy(linear_anz)
+forecast(linear_anz, h=5)
+plot(forecast(linear_anz, h=5))
+```
+The linear regression forecast shows a steady trend for the number of establishment locations over the next five years.
+
+Method 2: ETS Model
+
+```{r}
+ets_anz <- ets(total_anz_ts)
+accuracy(ets_anz)
+forecast(ets_anz,h=5)
+plot(forecast(ets_anz, h=5))
+```
+The ETS model forecast indicates a continued decline in the number of total establishment locations over the next five years, following the sharp drop observed in recent years.
+
+Method 3: Auto.arima Model
+
+```{r}
+arima_anz <- auto.arima(total_anz_ts)
+summary(arima_anz)
+forecast(arima_anz, h = 5)
+plot(forecast(arima_anz, h = 5))
+
+```
+The ARIMA model shows a continued decline in total establishment locations, with the point forecast decreasing steadily each year from 2023 to 2027. 
+
+```{r}
+# Compare 3 methods' AIC
+AIC(linear_anz, ets_anz, arima_anz)
+```
+auto.arima has the smallest AIC, which means the prediction is more reliable. So we choose this prediction method for the following analysis.
+
+In order to predict the trend of different industries, create a new data frame with 5 categories.
+
+```{r}
+total_cat <- setNames(data.frame(
+  Year = total_anz$`Census year`, 
+  Industrial = rowSums(total_anz[, c(5, 7, 9, 13, 14, 20, 21)]),
+  Entertainment = rowSums(total_anz[, c(3, 6)]),
+  Retail = total_anz[, 19],
+  Institutional = rowSums(total_anz[, c(8, 11)]),
+  Commercial = rowSums(total_anz[, c(4, 10, 12, 15, 16, 17, 18)])
+), c("Year", "Industrial", "Entertainment", "Retail", "Institutional", "Commercial"))
+```
+
+```{r}
+categories <- c("Industrial", "Entertainment", "Retail", "Institutional", "Commercial")
+
+# Create time series for each category and store them in a list
+ts_list <- lapply(categories, function(cat) ts(total_cat[[cat]], start = min(total_cat$Year), frequency = 1))
+
+# Fit ARIMA models for each time series and store the models in a list
+arima_models <- lapply(ts_list, auto.arima)
+
+# Forecast for the next 5 years for each category and store the forecasts in a list
+forecasts <- lapply(arima_models, forecast, h = 5)
+
+# Assign names to the forecasts
+names(forecasts) <- categories
+```
+
+```{r}
+# Define plot titles
+titles <- c("Industrial Forecast", "Entertainment Forecast", "Retail Forecast", 
+            "Institutional Forecast", "Commercial Forecast")
+
+par(mfrow = c(2, 3))
+
+# Use a loop to plot each forecast
+for (i in 1:length(forecasts)) {
+  plot(forecasts[[i]], main = titles[i])
+}
+
+par(mfrow = c(1, 1))
+```
+The forecasts indicate an overall decline in most sectors, including industrial, entertainment, and retail establishments, reflecting a potential shift in economic or business conditions. The institutional sector shows moderate stability with slight fluctuations, while the commercial sector demonstrates a more resilient trend, with a potential slight recovery after recent declines.
+
+Now only focus on Commercial category.
+
+```{r}
+forecasts$Commercial
+```
+The Commercial sector shows a moderate recovery after a period of decline, with forecasts indicating steady growth from 2023 to 2027. 
+
+There are 2 columns may related to IT jobs which IT students may be interested in, called "Information Media and Telecommunications" and "Professional, Scientific and Technical Services".
+
+```{r}
+# Create time series for each column
+Info_media_ts <- ts(total_anz[, 12], start = min(total_anz$`Census year`), frequency = 1)
+tech_serv_ts <- ts(total_anz[, 16], start = min(total_anz$`Census year`), frequency = 1)
+
+# Fit ARIMA models to both time series
+Info_media <- auto.arima(Info_media_ts)
+tech_serv <- auto.arima(tech_serv_ts)
+
+# Forecast for the next 5 years for both columns
+Info_media_forecast <- forecast(Info_media, h = 5)
+tech_serv_forecast <- forecast(tech_serv, h = 5)
+
+Info_media_forecast
+tech_serv_forecast
+```
+
+```{r}
+# Plot the forecasts
+par(mfrow = c(1, 2))
+plot(Info_media_forecast, main = "Information Media and Telecommunications", cex.main = 0.8)
+plot(tech_serv_forecast, main = "Professional, Scientific and Technical Services", cex.main = 0.8)
+
+par(mfrow = c(1, 1))
+```
+
+For Information Media and Telecommunications, the forecast shows a steady decline, with the industry expected to continue shrinking gradually over the next few years. 
+In contrast, Professional, Scientific, and Technical Services exhibits a sharper and more volatile decline. The steeper drop and wider confidence interval suggest more instability in this industry, with a potential for greater variability in the forecast outcomes. 
